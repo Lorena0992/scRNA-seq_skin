@@ -1,0 +1,725 @@
+---
+title: "TFM"
+author: "Lorena Martinez Quiles"
+date: "2023-10-08"
+output: html_document
+---
+
+## Run library 
+
+```{r libraries, include=FALSE}
+
+
+library(Seurat)
+library(dplyr)
+library(harmony)
+library(ggplot2)
+library(pheatmap)
+
+```
+
+## Load dataset
+
+```{r Load, include=FALSE}
+
+
+for (file in c("Healthy_D01_counts", "Healthy_D02_counts", "Healthy_D03_counts", "Healthy_D04_counts", "Healthy_D05_counts", "Healthy_D06_counts", "Healthy_D07_counts", "Healthy_D08_counts", "Healthy_D09_counts", "Healthy_D10_counts", "Healthy_D11_counts", "Healthy_D12_counts", "Healthy_D13_counts", "Healthy_D14_counts", "Lupus_Les_D1_counts","Lupus_Les_D2_counts", "Lupus_Les_D3_counts", "Lupus_Les_D4_counts", "Lupus_Les_D5_counts", "Lupus_Les_D6_counts", "Lupus_Les_D7_counts", "Lupus_NonLes_D1_counts", "Lupus_NonLes_D2_counts", "Lupus_NonLes_D3_counts", "Lupus_NonLes_D4_counts", "Lupus_NonLes_D5_counts", "Lupus_NonLes_D6_counts", "Lupus_NonLes_D7_counts")){
+        seurat_data <- Read10X(data.dir = paste0("/Users/loren/Desktop/Bioinformatics_MSc/TFM/Data/GSE186476_RAW/", file))
+        seurat_obj <- CreateSeuratObject(counts = seurat_data, 
+                                         min.features = 200, project = file)
+        assign(file, seurat_obj)
+}
+
+
+head(Lupus_Les_D1_counts@meta.data)
+
+
+
+# List of Seurat objects
+
+
+seurat_list <- list(Healthy = Healthy_D02_counts, Healthy_D03_counts, Healthy_D04_counts, Healthy_D05_counts, Healthy_D06_counts, Healthy_D07_counts, Healthy_D08_counts, Healthy_D09_counts, Healthy_D10_counts, Healthy_D11_counts, Healthy_D12_counts, Healthy_D13_counts, Healthy_D14_counts, Lupus_Les = Lupus_Les_D1_counts, Lupus_Les_D2_counts, Lupus_Les_D3_counts, Lupus_Les_D4_counts,  Lupus_Les_D5_counts, Lupus_Les_D6_counts, Lupus_Les_D7_counts, Lupus_NonLes_D1_counts, Lupus_NonLes = Lupus_NonLes_D2_counts, Lupus_NonLes_D3_counts, Lupus_NonLes_D4_counts, Lupus_NonLes_D5_counts, Lupus_NonLes_D6_counts, Lupus_NonLes_D7_counts)
+
+
+  
+# Use the merge function with the named list
+
+
+seurat_merged <- merge(x = Healthy_D01_counts, y = seurat_list, add.cell.ids = c("Healthy_D01_counts", names(seurat_list)), project = "lupus")
+
+
+# Now, merged_seurat contains the merged data
+
+```
+
+## Pre-processing
+
+Cells with less than 500 transcripts, less than 100 genes,or more than 10% of mitochondrial expression were first filtered out as low-quality cells. 
+
+nFeature_RNA > 100: Select cells with more than 100 detected features (genes). This condition filters out cells with a low complexity of the transcriptome.
+
+nCount_RNA > 500: Select cells with more than 500 total RNA molecules detected. This condition filters out cells with low overall expression.
+
+percent.mt < 10: Select cells with less than 10% of transcripts mapping to mitochondrial genes. This condition filters out cells with potentially high mitochondrial gene expression, which can indicate stress or low-quality cells.
+
+By applying these conditions, i am filtering your dataset to retain cells that meet certain quality criteria. This is a common preprocessing step in single-cell RNA-seq analysis to ensure the inclusion of high-quality cells in downstream analyses.
+
+```{r pre-processing, include=FALSE}
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+
+seurat_merged[["percent.mt"]] <- PercentageFeatureSet(seurat_merged, pattern = "^MT-")
+
+# Visualize QC metrics as a violin plot
+
+VlnPlot(seurat_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+# plot1 <- FeatureScatter(seurat_merged, feature1 = "nCount_RNA", feature2 = "percent.mt")
+
+# plot2 <- FeatureScatter(seurat_merged, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+
+# plot1 + plot2
+
+
+seurat_merged <- subset(seurat_merged, subset = nFeature_RNA > 100 & nCount_RNA > 500 & percent.mt < 10)
+
+
+```
+
+# Normalization, scale and variable genes
+
+Next, we apply a linear transformation (‘scaling’) that is a standard pre-processing step prior to dimensional reduction techniques like PCA. The ScaleData() function:
+
+Shifts the expression of each gene, so that the mean expression across cells is 0
+Scales the expression of each gene, so that the variance across cells is 1
+This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate
+The results of this are stored in pbmc[["RNA"]]@scale.data
+
+
+```{r scale_data, include=FALSE}
+
+
+seurat_merged <- SCTransform(seurat_merged, conserve.memory = TRUE)
+
+
+# Average number of genes per cell
+
+avg_genes_per_cell <- mean(Matrix::colSums(seurat_merged@assays$SCT@counts > 0))
+
+# Average number of transcripts (UMIs) per cell
+
+avg_transcripts_per_cell <- mean(Matrix::colSums(seurat_merged@assays$SCT@counts))
+
+
+```
+
+# PCA and Harmony
+
+```{r PCA, include=FALSE}
+
+
+seurat_merged <- RunPCA(seurat_merged, features = VariableFeatures(object = seurat_merged))
+
+seurat_merged <- RunHarmony(seurat_merged, group.by.vars = "orig.ident")
+
+```
+
+# UMAP
+
+Next we perform PCA on the scaled data. By default, only the previously determined variable features are used as input, but can be defined using features argument if you wish to choose a different subset.
+
+```{r linear_dimensional_reduction, include=FALSE}
+
+
+seurat_merged  <- RunUMAP(seurat_merged, dims = 1:30, verbose = FALSE, reduction = "harmony")
+
+seurat_merged <- FindNeighbors(seurat_merged, dims = 1:30, verbose = FALSE)
+
+seurat_merged <- FindClusters(seurat_merged, resolution = 0.5,  verbose = FALSE)
+
+patient <- DimPlot(seurat_merged, reduction = "umap", group.by = "orig.ident", label = FALSE ) 
+
+cluster <- DimPlot(seurat_merged, reduction = "umap", label = TRUE, label.size = 6)
+cluster
+
+ggsave("ALL_Clusters.png", plot = cluster, width = 8, height = 6, units = "in")
+
+patient
+
+# Seurat provides several useful ways of visualizing both cells and features that define the PCA, including VizDimReduction(), DimPlot(), and DimHeatmap()
+
+# Examine and visualize PCA results a few different ways
+
+print(seurat_merged[["pca"]], dims = 1:5, nfeatures = 5)
+
+#VizDimLoadings(seurat_merged, dims = 1:2, reduction = "pca")
+
+```
+
+# Manual annotation dataset
+
+Find markers for every cluster compared to all remaining cells, report only the positive ones. FindAllMarkers give us a list of genes characteristic of each cluster (the genes that identify each cluster are the ones with a lower p adj value in the DEGs analysis that the FindAllMarkers funtion performs)
+
+
+```{r Manual annotation, include=FALSE}
+
+
+seurat.markers <- FindAllMarkers(seurat_merged, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+
+seurat.markers
+
+# We can now use as a reference the genes from the heatmap from the peaper, we can then identifiy as top genes (lower p adj val) the ones that correspond with the markers from the paper
+
+
+
+# markers from the paper
+
+Keratinocyte<-c("KRT14","KRT1","KRT10","DMKN","KRTDAP")
+Melanocyte<-c("DCT","TYRP1","PMEL","MLANA","MITF")
+Eccrine_gland <-c("DCD","SCGB2A2","MUCL1","SCGB1D2","SCGB1B2P")
+Endothelial<-c("CCL21","CLDN5","ACKR1","FABP4","PECAM1")
+Fibroblast<-c("DCN","CFD","COL1A1","PTGDS","COL1A2")
+Smooth_muscle<-c("TAGLN","ACTA2","RGS5","TPM2","MYL9")
+Nerve_cell<-c("MPZ","S100B","NRXN1","PMP22","CRYAB")
+T_cell<-c("IL7R","SRGN","IL32","CCL5","PTPRC")
+Myeloid<-c("HLA-DRA","CXCL8","LYZ","HLA-DPB1","HLA-DPA1")
+Mast<-c("TPSB2","TPSAB1","HPGD","CTSG","HPGDS")
+
+All_markers = unique(c("KRT14","KRT1","KRT10","DMKN","KRTDAP","DCT","TYRP1","PMEL","MLANA","MITF","DCD","SCGB2A2","MUCL1","SCGB1D2","SCGB1B2P","CCL21","CLDN5","ACKR1","FABP4","PECAM1","DCN","CFD","COL1A1","PTGDS","COL1A2","TAGLN","ACTA2","RGS5","TPM2","MYL9", "MPZ","S100B","NRXN1","PMP22","CRYAB", "IL7R","SRGN","IL32","CCL5","PTPRC", "HLA-DRA","CXCL8","LYZ","HLA-DPB1","HLA-DPA1", "TPSB2","TPSAB1","HPGD","CTSG","HPGDS" ))
+
+
+seurat_merged_renamed <- RenameIdents(object = seurat_merged,  `23` = "Mast", `17` = "Myeloid", `5` = "T cell", `25` = "Nerve cell", `6` = "Smooth muscle", `12` = "Fibroblast", `4` = "Endothelial", `24` = "Eccrine gland", `13` = "Melanocyte", `2` = "Fibroblast", `0` = "Keratinocyte", `1` = "Keratinocyte" , `3` = "T cell", `7` = "Keratinocyte", `8` = "Keratinocyte", `9` = "Fibroblast", `10` = "Keratinocyte", `11` = "Keratinocyte", `14` = "Keratinocyte", `15` = "Keratinocyte", `16` = "Keratinocyte", `18` = "Keratinocyte", `19` = "Fibroblast", `20` = "Keratinocyte", `21` = "Endothelial", `22` = "Smooth muscle")
+
+cluster_renamed <- DimPlot(seurat_merged_renamed, reduction = "umap", label = F)
+cluster_renamed
+cluster_renamed+ theme(text = element_text(size = 16))
+
+ggsave("ALL_Clusters_renamed.png", plot = cluster_renamed+ theme(text = element_text(size = 16)), width = 8, height = 6, units = "in")
+
+DotPlot(seurat_merged_renamed, features = c(All_markers)) +
+  ggtitle("All Types") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) 
+
+```
+
+# Automatic annotation dataset
+
+```{r CELLid, include=FALSE}
+
+# Prepare data for automatic method
+
+rna.data.average = AverageExpression(seurat_merged)
+
+# This will generate average expression for each cluster
+
+rna.data.average = round(rna.data.average$RNA, 2)
+
+write.table(rna.data.average, "CELLiD_input2.txt", quote = F, col.names = F, row.names = T, sep="\t")
+
+# Then, you can upload this file to predict cell types
+
+# After you get the results, you can add the predicted cell type to seurat object as follows:
+
+predicted.ct = read.csv("CELLiD_output.csv")
+
+seurat_merged$primary.predict = predicted.ct[as.numeric(seurat_merged$seurat_clusters),2]
+
+seurat_merged$secondary.predict = predicted.ct[as.numeric(seurat_merged$seurat_clusters),3]
+
+DimPlot(seurat_merged, group.by = "primary.predict", label = F)+ ggtitle("All clusters")
+
+ggsave("ALL_Clusters_CELLiD.png", plot = DimPlot(seurat_merged, group.by = "primary.predict", label = F)+ ggtitle("All clusters")+ theme(text = element_text(size = 15)), width = 8, height = 6, units = "in")
+
+
+# Plotting a histogram of Primary.Score
+
+hist_all <- hist(predicted.ct$Primary.Score, col = "lightblue", border = "black", main = "Entire scRNA-seq dataset", xlab = "Score", ylab = "Frequency")
+
+
+png("HIST_ALL.png", width = 8, height = 6, units = "in", res = 300)
+plot(hist_all, xlab = "Score", cex.lab = 1.5, cex.axis = 2)
+dev.off()
+
+
+# comparison manual and automatic annotations
+
+tab <- table(seurat_merged_renamed@active.ident, seurat_merged$primary.predict)
+
+pheatmap(log2(tab+10), color=colorRampPalette(c("white", 
+"blue"))(101), angle_col =45, fontsize = 10)
+
+ggsave("ALL_HEATMAP.png", plot = pheatmap(log2(tab+10), color=colorRampPalette(c("white", 
+"blue"))(101), angle_col =90, fontsize = 13), width = 8, height = 6, units = "in")
+
+
+
+```
+
+## Manual annotation KC
+
+```{r Kc SUBSET, include=FALSE}
+
+# https://hbctraining.github.io/scRNA-seq_online/lessons/seurat_subclustering.html
+
+
+Kc_subset <- subset(seurat_merged_renamed, idents = "Keratinocyte")
+
+# Kc_subset  <- NormalizeData(Kc_subset)
+# Kc_subset <- FindVariableFeatures(Kc_subset)
+
+Kc_subset <- SCTransform(Kc_subset, conserve.memory = TRUE)
+
+Kc_subset  <- RunPCA(Kc_subset, features = VariableFeatures(object = Kc_subset))
+
+Kc_subset <- RunHarmony(Kc_subset , group.by.vars = "orig.ident")
+
+Kc_subset   <- RunUMAP(Kc_subset , dims = 1:15, verbose = FALSE, reduction = "harmony")
+
+Kc_subset  <- FindNeighbors(Kc_subset, dims = 1:15, verbose = FALSE)
+
+# Choosing the appropriate resolution parameter in the FindClusters function in Seurat is a crucial step in determining the granularity of your cell clustering. The resolution parameter controls the balance between splitting clusters into smaller subclusters and merging them into larger ones. A higher resolution leads to more fine-grained clusters, while a lower resolution results in fewer, larger clusters
+
+Kc_subset <- FindClusters(Kc_subset, resolution = 0.55,  verbose = FALSE)
+
+
+Kc_subset.cluster <- DimPlot(Kc_subset, reduction = "umap", label.size = 6, label = T)
+Kc_subset.cluster
+
+ggsave("KC_Clusters.png", plot = Kc_subset.cluster+ theme(text = element_text(size = 18)), width = 8, height = 6, units = "in")
+
+Kc_seurat.markers <- FindAllMarkers(Kc_subset , only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+
+Kc_seurat.markers
+
+write.table(Kc_seurat.markers, "Kc_seurat_markers_2.txt", quote = F, col.names = T, row.names = T, sep="\t")
+
+# markes from the paper
+
+
+Basal<-c("KRT15","COL17A1","DST","KRT14","POSTN","CXCL14","S100A2", "KRT5","SYT8","CYR61")
+Spinous<-c("KRT1","APOE","LY6D","KRT10","S100A7","S100A8","KRT6C","S100A9","KRT16")
+Supraspinous<-c("FLG","LOR","SLURP1","FLG2","C1orf68", "HOPX","CNFN","SPINK5","CALML5", "CDSN")
+Follicular<-c("GJB6","TM4SF1","GJB2","CHCHD10","CRABP2","WFDC3", "S100P", "MUCL1", "KRT17")
+Cycling<-c("STMN1","CENPF","TUBA1B","PTTG1","HMGB2","NUSAP1", "TOP2A", "TK1", "MKI67","HIST1H4C")
+channel<-c("GJB6","GJB2","ATP1B3","ATP1B1","ATP5B","FXYD3")
+
+All_Kc_markers = unique(c("KRT15","COL17A1","DST","KRT14","POSTN","CXCL14","S100A2", "KRT5","SYT8","CYR61","KRT1","APOE","LY6D","KRT10","S100A7","S100A8","KRT6C","S100A9","KRT16", "FLG","LOR","SLURP1","FLG2","C1orf68", "HOPX","CNFN","SPINK5","CALML5", "CDSN", "GJB6","TM4SF1","GJB2","CHCHD10","CRABP2","WFDC3", "S100P", "MUCL1", "KRT17", "S100A2", "STMN1","CENPF","TUBA1B","PTTG1","HMGB2","NUSAP1", "TOP2A", "TK1", "MKI67","HIST1H4C"))
+
+
+Kc_subset_renamed <- RenameIdents(object = Kc_subset,  `2` = "Basal", `0` = "Spinous", `4` = "Supraspinous", `1` = "Spinous" , `12` = "Spinous" , `3` = "Basal", `5` = "Spinous", `6` = "Spinous", `7` = "Spinous", `8` = "Spinous", `9` = "Spinous", `10` = "Follicular", `11` = "Spinous", `13` = "Spinous", `14` = "Spinous", `15` = "Basal", `16` = "Cycling",`17` = "Basal",`18` = "Spinous",`19` = "Spinous")
+
+Kc_subset_renamed.plot <- DimPlot(Kc_subset_renamed, reduction = "umap", label = FALSE)
+Kc_subset_renamed.plot
+Kc_subset_renamed.plot + theme(text = element_text(size = 20))
+
+channel_plot <- DotPlot(
+  Kc_subset,
+  assay = NULL,
+  channel
+) + ggtitle("SFRP2")
+
+channel_plot
+
+DotPlot(Kc_subset, features=c(rev(All_Kc_markers))) + ggtitle("Kc subtypes")+coord_flip()
+
+DotPlot(Kc_subset_renamed, features=c(rev(All_Kc_markers))) +
+  ggtitle("Kc Types") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))+coord_flip()
+
+
+```
+
+## Automatic annotation KC
+
+```{r CELLid Kc, include=FALSE}
+
+# Prepare data for automatic method
+
+rna.data.average_Kc = AverageExpression(Kc_subset)
+
+# This will generate average expression for each cluster
+
+rna.data.average_Kc = round(rna.data.average_Kc$RNA, 2)
+
+write.table(rna.data.average_Kc, "CELLiD_input_Kc.txt", quote = F, col.names = F, row.names = T, sep="\t")
+
+# Then, you can upload this file to predict cell types
+
+# After you get the results, you can add the predicted cell type to seurat object as follows:
+
+predicted.ct_Kc = read.csv("CELLiD_output_Kc.csv")
+
+Kc_subset$primary.predict = predicted.ct_Kc[as.numeric(Kc_subset$seurat_clusters),2]
+
+Kc_subset$secondary.predict = predicted.ct_Kc[as.numeric(Kc_subset$seurat_clusters),3]
+
+DimPlot(Kc_subset, group.by = "primary.predict", label = F) + ggtitle("KC clusters")+ theme(text = element_text(size = 16))
+
+# Plotting a histogram of Primary.Score
+
+hist_Kc <- hist(predicted.ct_Kc$Primary.Score, col = "lightblue", border = "black", main = "Kc subset", xlab = "Score", ylab = "Frequency")
+
+png("hist_Kc.png", width = 8, height = 6, units = "in", res = 300)
+plot(hist_Kc, xlab = "Score", cex.lab = 1.5, cex.axis = 2)
+dev.off()
+
+
+# Comparison manual and automatic KC
+
+tab_Kc <- table(Kc_subset_renamed@active.ident, Kc_subset$primary.predict)
+pheatmap(log2(tab_Kc+10), color=colorRampPalette(c("white", "blue"))(101), angle_col =45, fontsize = 11)
+
+ggsave("kc_HEATMAP.png", plot = pheatmap(log2(tab_Kc+10), color=colorRampPalette(c("white", "blue"))(101), angle_col =45, fontsize = 13), width = 8, height = 6, units = "in")
+
+
+```
+
+## Manual annotation FBs
+
+```{r  FBs SUBSET, include=FALSE}
+
+
+FBs_subset <- subset(seurat_merged_renamed, idents = "Fibroblast")
+
+FBs_subset <- SCTransform(FBs_subset, conserve.memory = TRUE)
+
+FBs_subset  <- RunPCA(FBs_subset, features = VariableFeatures(object = FBs_subset))
+
+FBs_subset <- RunHarmony(FBs_subset , group.by.vars = "orig.ident")
+
+FBs_subset   <- RunUMAP(FBs_subset , dims = 1:15, verbose = FALSE, reduction = "harmony")
+
+FBs_subset  <- FindNeighbors(FBs_subset, dims = 1:15, verbose = FALSE)
+
+FBs_subset <- FindClusters(FBs_subset, resolution = 0.5,  verbose = FALSE)
+
+FBs_subset.cluster <- DimPlot(FBs_subset, reduction = "umap", label = TRUE, label.size = 6)
+FBs_subset.cluster
+
+ggsave("FB_Clusters.png", plot = FBs_subset.cluster+ theme(text = element_text(size = 18)), width = 8, height = 6, units = "in")
+
+FBs_seurat.markers <- FindAllMarkers(FBs_subset , only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+
+FBs_seurat.markers
+
+write.table(FBs_seurat.markers, "FB_seurat_markers.txt", quote = F, col.names = T, row.names = T, sep="\t")
+
+# markers from the paper
+
+SFRP2 = c("PLPP3","LEPR","ADH1B","C3","NBL1","COL18A1","WIF1", "APCDD1","WISP2","APOE","C7","CXCL2")
+IFN = c("RSAD2","MT2A","ISG15","IFIT3", "IFI6","PTX3","CD74","PLA2G2A","MT1X","CXCL9","G0S2")
+RAMP1 = c("RAMP1","FMO2","OLFML2A","FGFBP2","CPE", "A2M", "SFRP1","PRSS23","SPON2","TIMP3","COL26A1")
+SFRP4 = c("APOD","ANGPTL7","ITGA6","CLDN1","KLF5","TAGLN","NR2F2","CYP1B1","IGFBP6")
+COL11A1 = c("COL11A1","ASPN","TNN","TNMD","DPEP1","EDNRA", "PPP1R14A","POSTN","COCH","PMEPA1","OGN")
+
+All_FBs_markers = unique(c("PLPP3","LEPR","ADH1B","C3","NBL1","COL18A1","WIF1", "APCDD1","WISP2","APOE","C7","CXCL2","RSAD2","MT2A","ISG15","IFIT3", "IFI6","PTX3","CD74","PLA2G2A","MT1X","CXCL9","G0S2", "RAMP1","FMO2","OLFML2A","FGFBP2","CPE", "A2M", "SFRP1","PRSS23","SPON2","TIMP3","COL26A1","APOD","ANGPTL7","ITGA6","CLDN1","KLF5","TAGLN","NR2F2","CYP1B1","IGFBP6", "COL11A1","ASPN","TNN","TNMD","DPEP1","EDNRA", "PPP1R14A","POSTN","COCH","PMEPA1","OGN"))
+
+
+SFRP2_plot <- DotPlot(
+  FBs_subset,
+  assay = NULL,
+  SFRP2
+) + ggtitle("SFRP2")
+
+SFRP2_plot
+
+FeaturePlot(FBs_subset, features = SFRP2) 
+
+INF_plot <- DotPlot(
+  FBs_subset,
+  assay = NULL,
+  IFN
+) + ggtitle("IFN")
+
+INF_plot
+
+FeaturePlot(FBs_subset, features = IFN) 
+
+SFRP4_plot <- DotPlot(
+  FBs_subset,
+  assay = NULL,
+  SFRP4
+) + ggtitle("SFRP4")
+
+SFRP4_plot
+
+FeaturePlot(FBs_subset, features = SFRP4) 
+
+RAMP1_plot <- DotPlot(
+  FBs_subset,
+  assay = NULL,
+  RAMP1
+) + ggtitle("RAMP1")
+
+RAMP1_plot
+
+FeaturePlot(FBs_subset, features = RAMP1) 
+
+COL11A1_plot <- DotPlot(
+  FBs_subset,
+  assay = NULL,
+  COL11A1 
+) + ggtitle("COL11A1 ")
+
+COL11A1_plot
+
+# SFRP2+cell population includes two subpopulations, one expressing WIF1, COMP, and NKD2 (WIF1+) and the other expressing PCOLCE2, CD55 and FSTL3.
+
+
+WIF1 <-c("WIF1","COMP","NKD2")
+WIF1NO <-c("PCOLCE2", "CD55")
+APOE_CD9<-c("APOE","CCL19","APCDD1")
+RAMP1<-c("FGFBP2", "OLFML2A")
+
+
+FeaturePlot(FBs_subset, features = WIF1) 
+FeaturePlot(FBs_subset, features = WIF1NO) 
+FeaturePlot(FBs_subset, features = APOE) 
+FeaturePlot(FBs_subset, features = APOE_CD9) 
+FeaturePlot(FBs_subset, features = RAMP1) 
+
+
+FBs_subset_renamed <- RenameIdents(object = FBs_subset, `0` = "SFRP2+",  `7` = "IFN", `6` = "RAMP1+", `9` = "SFRP4+", `1` = "SFRP2+", `2` = "SFRP2+" , `3` = "SFRP2+", `4` = "COL11A1+", `5` = "SFRP2+", `8` = "IFN", `10` = "SFRP2+", `11` = "SFRP2+", `12` = "SFRP2+")
+
+FBs_subset_renamed.plot <- DimPlot(FBs_subset_renamed, reduction = "umap", label = F)
+FBs_subset_renamed.plot+ theme(text = element_text(size = 16))
+
+DotPlot(FBs_subset, features=c(rev(All_FBs_markers))) + ggtitle("FBs subtypes")+coord_flip()
+
+DotPlot(FBs_subset_renamed, features=c(rev(All_FBs_markers))) +
+ ggtitle("FBs Types") +   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))+coord_flip()
+
+
+```
+
+## Automatic annotation FBs
+
+```{r CELLid Fb, include=FALSE}
+
+# Prepare data for automatic method
+
+rna.data.average_FBs = AverageExpression(FBs_subset)
+
+# This will generate average expression for each cluster
+
+rna.data.average_FBs = round(rna.data.average_FBs$RNA, 2)
+
+write.table(rna.data.average_FBs, "CELLiD_input_FBs.txt", quote = F, col.names = F, row.names = T, sep="\t")
+
+# Then, you can upload this file to predict cell types
+
+# After you get the results, you can add the predicted cell type to seurat object as follows:
+
+predicted.ct_FBs = read.csv("CELLiD_output_FBs.csv")
+
+FBs_subset$primary.predict = predicted.ct_FBs[as.numeric(FBs_subset$seurat_clusters),2]
+
+FBs_subset$secondary.predict = predicted.ct_FBs[as.numeric(FBs_subset$seurat_clusters),3]
+
+DimPlot(FBs_subset, group.by = "primary.predict", label = F) + ggtitle("FBs clusters")
+
+# Plotting a histogram of Primary.Score
+
+hist_FBs <- hist(predicted.ct_FBs$Primary.Score, col = "lightblue", border = "black", main = "FB subset", xlab = "Score", ylab = "Frequency")
+
+png("hist_FB.png", width = 8, height = 6, units = "in", res = 300)
+plot(hist_FBs, xlab = "Score", cex.lab = 1.5, cex.axis = 2)
+dev.off()
+
+
+# Comparison manual and automatic FBs
+
+tab_FBs <- table(FBs_subset_renamed@active.ident, FBs_subset$primary.predict)
+pheatmap(log2(tab_FBs+10), color=colorRampPalette(c("white", "blue"))(101), angle_col =45, fontsize = 11)
+
+ggsave("fb_HEATMAP.png", plot = pheatmap(log2(tab_FBs+10), color=colorRampPalette(c("white", "blue"))(101), angle_col =90, fontsize = 13), width = 8, height = 6, units = "in")
+
+
+
+```
+
+## Manual annotation T cells
+
+```{r  T SUBSET, include=FALSE}
+
+# https://hbctraining.github.io/scRNA-seq_online/lessons/seurat_subclustering.html
+
+
+T_subset <- subset(seurat_merged_renamed, idents = "T cell")
+
+T_subset  <- SCTransform(T_subset, conserve.memory = TRUE)
+
+T_subset  <- RunPCA(T_subset, features = VariableFeatures(object = T_subset))
+
+
+T_subset <- RunHarmony(T_subset , group.by.vars = "orig.ident")
+
+T_subset   <- RunUMAP(T_subset , dims = 1:30, verbose = FALSE, reduction = "harmony")
+
+T_subset  <- FindNeighbors(T_subset, dims = 1:30, verbose = FALSE)
+
+T_subset <- FindClusters(T_subset, resolution = 1,  verbose = FALSE)
+
+T_subset.cluster <- DimPlot(T_subset, reduction = "umap", label = TRUE, label.size = 6)
+T_subset.cluster
+
+ggsave("T_Clusters.png", plot = T_subset.cluster+ theme(text = element_text(size = 18)), width = 8, height = 6, units = "in")
+
+T_seurat.markers <- FindAllMarkers(T_subset , only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+
+T_seurat.markers
+
+write.table(T_seurat.markers, file = "DES_T_CELLS.txt", sep = "\t", row.names = FALSE)
+
+# markes from the paper
+
+Tcm = c("CCR7","KLF2","FOXP1","GPR183","PDE4D","PIK3R1","LYAR")
+Tem = c("LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12")
+Trm = c("LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12","ATP1B1","CTSW","NCR3","METRNL","GEM")
+CD161_Tm = c("LGALS3","IQCG","KLRB1", "CCL20","NBAS","LMO4", "PLIN2")
+Treg = c("FOXP3","CTLA4","TIGIT","CD27","CORO1B","CARD16", "BATF")
+Tph_Tfh = c("CXCL13","FABP5","CD83","NMB","G0S2","FKBP5", "IFI27")
+IFN_T = c("IFI27","RSAD2","IFIT3","IFIT2","IFI6","STAT1","MX1","IFI44L")
+CD8T = c("GZMK", "CCL4","CCL5","NKG7","GZMA","CCL4L2","IFNG")
+NKC = c("CTSW", "XCL1", "KLRB1", "FCER1G","TYROBP","GNLY","XCL2","GZMB")
+NKT = c("NKG7", "TRDV2", "U62631.1", "AL109914.1","AC111006.1","AC022126.1","AC108879.1","LINC01013","SNX29P1")
+
+
+
+All_T_markers = unique(c("CCR7","KLF2","FOXP1","GPR183","PDE4D","PIK3R1","LYAR","LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12","LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12","ATP1B1","CTSW","NCR3","METRNL","GEM","LGALS3","IQCG","KLRB1", "CCL20","NBAS","LMO4", "PLIN2","FOXP3","CTLA4","TIGIT","CD27","CORO1B","CARD16", "BATF","CXCL13","FABP5","CD83","NMB","G0S2","FKBP5", "IFI27", "ICOS","PDCD1","IFI27","RSAD2","IFIT3","IFIT2","IFI6","STAT1","MX1","IFI44L","GZMK", "CCL4","CCL5","NKG7","GZMA","CCL4L2","IFNG","CTSW", "XCL1", "KLRB1", "FCER1G","TYROBP","GNLY","XCL2","GZMB"))
+
+DotPlot(T_subset, features=c(rev(All_T_markers))) + ggtitle("T subtypes")+coord_flip()
+
+T_subset_renamed <- RenameIdents(object = T_subset,  `4` = "Tem", `2` = "Tem", `0` = "Trm", `9` = "Trm", `8` = "Treg", `12` = "Tem", `1` = "IFN T" , `3` = "Tem", `5` = "Tem", `6` = "Tcm", `7` = "Tem", `10` = "CD8 T", `11` = "NKC", `12` = "Tem", `13` = "CD8 T", `14` = "IFN T", `15` = "Tcm", `16` = "IFN T")
+
+T_subset_renamed.plot <- DimPlot(T_subset_renamed, reduction = "umap", label = F)
+T_subset_renamed.plot+ theme(text = element_text(size = 16))
+
+DotPlot(T_subset_renamed, features=c(rev(All_T_markers))) + ggtitle("T subtypes")+coord_flip()
+
+DotPlot(T_subset_renamed, features=c(rev(All_T_markers))) +  ggtitle("T Types") +   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))+coord_flip()
+
+CD69_plot <- DotPlot(
+  T_subset,
+  assay = NULL,
+  "CD69"
+) + ggtitle("CD19 ")
+
+CD69_plot
+
+FeaturePlot(T_subset, features = "CD69") 
+
+
+```
+
+## Automatic annotation T cells
+
+```{r CELLid T, include=FALSE}
+
+# Prepare data for automatic method
+
+rna.data.average_T = AverageExpression(T_subset)
+
+# This will generate average expression for each cluster
+
+rna.data.average_T = round(rna.data.average_T$RNA, 2)
+
+write.table(rna.data.average_T, "CELLiD_input_T.txt", quote = F, col.names = F, row.names = T, sep="\t")
+
+# Then, you can upload this file to predict cell types
+
+# After you get the results, you can add the predicted cell type to seurat object as follows:
+
+predicted.ct_T = read.csv("CELLiD_output_T.csv")
+
+T_subset$primary.predict = predicted.ct_T[as.numeric(T_subset$seurat_clusters),2]
+
+T_subset$secondary.predict = predicted.ct_T[as.numeric(T_subset$seurat_clusters),3]
+
+DimPlot(T_subset, group.by = "primary.predict", label = F)  + ggtitle("T cell clusters")
+
+# Plotting a histogram of Primary.Score
+
+hist_T <- hist(predicted.ct_T$Primary.Score, col = "lightblue", border = "black", main = "T cell subset", xlab = "Score", ylab = "Frequency")
+
+png("hist_t.png", width = 8, height = 6, units = "in", res = 300)
+plot(hist_T, xlab = "Score", cex.lab = 1.5, cex.axis = 2)
+dev.off()
+
+
+# Comparison manual and automatic T cells
+
+tab_T <- table(T_subset_renamed@active.ident, T_subset$primary.predict)
+pheatmap(log2(tab_T+10), color=colorRampPalette(c("white", "blue"))(101), angle_col =45, fontsize = 12)
+
+ggsave("T_HEATMAP.png", plot = pheatmap(log2(tab_T+10), color=colorRampPalette(c("white", "blue"))(101), angle_col =90, fontsize = 13), width = 8, height = 6, units = "in")
+
+
+
+
+```
+
+```{r  myeloid SUBSET, include=FALSE}
+
+# https://hbctraining.github.io/scRNA-seq_online/lessons/seurat_subclustering.html
+
+
+myeloid_subset <- subset(seurat_merged_renamed, idents = "Myeloid")
+
+myeloid_subset  <- SCTransform(myeloid_subset, conserve.memory = TRUE)
+
+myeloid_subset  <- RunPCA(myeloid_subset, features = VariableFeatures(object = myeloid_subset))
+
+
+myeloid_subset<- RunHarmony(myeloid_subset , group.by.vars = "orig.ident")
+
+myeloid_subset   <- RunUMAP(myeloid_subset , dims = 1:5, verbose = FALSE, reduction = "harmony")
+
+myeloid_subset <- FindNeighbors(myeloid_subset, dims = 1:5, verbose = FALSE)
+
+myeloid_subset<- FindClusters(myeloid_subset, resolution = 0.6,  verbose = FALSE)
+
+myeloid_subset.cluster <- DimPlot(myeloid_subset, reduction = "umap", label = TRUE)
+myeloid_subset.cluster
+
+myeloid_seurat.markers <- FindAllMarkers(myeloid_subset , only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+
+myeloid_seurat.markers 
+
+write.table(myeloid_seurat.markers , file = "DES_myeloid_CELLS.txt", sep = "\t", row.names = FALSE)
+
+# markes from the paper
+
+cDC1 = c("CLEC9A","WDFY4","CCND1","DNASE1L3","CPNE3","TCEA3","CPVL")
+cDC2A = c("LAMP3","EBI3","CCL19","FSCN1","CCL17","CCL22","BIRC3")
+Trm = c("LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12","ATP1B1","CTSW","NCR3","METRNL","GEM")
+CD161_Tm = c("LGALS3","IQCG","KLRB1", "CCL20","NBAS","LMO4", "PLIN2")
+Treg = c("FOXP3","CTLA4","TIGIT","CD27","CORO1B","CARD16", "BATF")
+Tph_Tfh = c("CXCL13","FABP5","CD83","NMB","G0S2","FKBP5", "IFI27")
+IFN_T = c("IFI27","RSAD2","IFIT3","IFIT2","IFI6","STAT1","MX1","IFI44L")
+CD8T = c("GZMK", "CCL4","CCL5","NKG7","GZMA","CCL4L2","IFNG")
+NKC = c("CTSW", "XCL1", "KLRB1", "FCER1G","TYROBP","GNLY","XCL2","GZMB")
+NKT = c("NKG7", "TRDV2", "U62631.1", "AL109914.1","AC111006.1","AC022126.1","AC108879.1","LINC01013","SNX29P1")
+
+
+
+All_T_markers = unique(c("CCR7","KLF2","FOXP1","GPR183","PDE4D","PIK3R1","LYAR","LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12","LMNA","EZR","NR3C1","ANXA1","ZFP36","RGCC","MTRNR2L12","ATP1B1","CTSW","NCR3","METRNL","GEM","LGALS3","IQCG","KLRB1", "CCL20","NBAS","LMO4", "PLIN2","FOXP3","CTLA4","TIGIT","CD27","CORO1B","CARD16", "BATF","CXCL13","FABP5","CD83","NMB","G0S2","FKBP5", "IFI27", "ICOS","PDCD1","IFI27","RSAD2","IFIT3","IFIT2","IFI6","STAT1","MX1","IFI44L","GZMK", "CCL4","CCL5","NKG7","GZMA","CCL4L2","IFNG","CTSW", "XCL1", "KLRB1", "FCER1G","TYROBP","GNLY","XCL2","GZMB"))
+
+DotPlot(T_subset, features=c(rev(All_T_markers))) + ggtitle("T subtypes")+coord_flip()
+
+T_subset_renamed <- RenameIdents(object = T_subset,  `4` = "Tcm", `2` = "Tem", `0` = "Tem", `9` = "Trm", `8` = "Treg", `12` = "IFN T", `1` = "Tcm" , `3` = "Treg", `5` = "Tem", `6` = "Tem", `7` = "Tcm", `10` = "NKC", `11` = "CD8 T")
+
+T_subset_renamed.plot <- DimPlot(T_subset_renamed, reduction = "umap", label = F)
+T_subset_renamed.plot+ theme(text = element_text(size = 16))
+
+DotPlot(T_subset_renamed, features=c(rev(All_T_markers))) + ggtitle("T subtypes")+coord_flip()
+
+DotPlot(T_subset_renamed, features=c(rev(All_T_markers))) +  ggtitle("T Types") +   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))+coord_flip()
+
+
+
+```
