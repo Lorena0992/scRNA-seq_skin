@@ -1,3 +1,3 @@
 # scRNA-seq_skin
 
-I am a read-me and should be filled with information
+This study evaluated the performance of the automatic annotation tool CELLiD in comparison to manual annotation for a skin-derived scRNA-seq dataset. Overall, the manual annotation aligned well with the original study and CELLiD, confirming the reliability of the automatic annotation tool. However, discrepancies arose in the annotation of the different subsets, particularly for T cell subtypes. CELLiD demonstrated efficiency in annotating entire datasets but struggled to identify specific subpopulations of cells, particularly of T cells. A hybrid approach, combining manual and automatic annotation, is proposed for optimal scRNA-seq analysis in skin samples, acknowledging the strengths and limitations of both methods.
